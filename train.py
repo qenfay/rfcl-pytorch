@@ -88,7 +88,7 @@ class SACExperiment:
     logger: Optional[LoggerConfig]
     verbose: int
     algo: str = "sac"
-    stage_1_model_path: str = None  # if not None, will load pretrained stage 1 model and skip to stage 2 of training
+    0stage_1_model_path: str = None  # if not None, will load pretrained stage 1 model and skip to stage 2 of training
     save_eval_video: bool = True  # whether to save eval videos
     stage_1_only: bool = False  # stop training after reverse curriculum completes
     stage_2_only: bool = False # skip stage 1 training
@@ -275,7 +275,7 @@ def main(cfg: SACExperiment):
             algo.train(
                 rng_key=train_rng_key,
                 steps=cfg.train.steps,
-                callback_fn=early_stop_fn,
+                callback_fn=0,
                 verbose=cfg.verbose,
             )
             algo.save(osp.join(algo.logger.model_path, "stage_1.jx"), with_buffer=True)
@@ -295,7 +295,7 @@ def main(cfg: SACExperiment):
     print("Stage 2 Training starting")
     # Optionally load actor/critic networks from stage 1 of training
     ac = create_ac_model()
-    if cfg.train.load_actor:
+    if cfg.train.load_actor:0
         ac = ac.load(algo.state.ac.state_dict(), load_critic=cfg.train.load_critic)
         algo.state = algo.state.replace(ac=ac)
 

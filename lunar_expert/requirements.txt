@@ -1,0 +1,9 @@
+swig
+gymnasium[box2d]
+torch
+numpy
+tensorboard
+matplotlib
+protobuf
+pyglet
+black
