@@ -3,6 +3,7 @@ sys.path.append("../")
 
 import numpy as np
 import gymnasium as gym
+import torch
 from network import MLP
 from network import DQNAgent
 from datetime import datetime
@@ -62,14 +63,10 @@ def run_episode(
     env,
     agent,
     deterministic,
-    skip_frames=5,
     do_training=True,
     rendering=False,
-    max_timesteps=1000,
-    history_length=0,
-    max_neg_threshold = 50,
-    max_neg = 30
-):
+    training_steps = 6
+    ):
     """
     This methods runs one episode for a gym environment.
     deterministic == True => agent executes only greedy actions according the Q function approximator (no random actions).
@@ -87,7 +84,7 @@ def run_episode(
         action_id = agent.act(state=state, deterministic=deterministic)
         next_state, reward, terminal, truncated,info = env.step(action_id)
 
-        if do_training:
+        if do_training  == True:
             agent.train(state, action_id, next_state, reward, terminal)
 
         stats.step(reward, action_id)
@@ -97,8 +94,8 @@ def run_episode(
         if rendering:
             env.render()
 
-        if terminal or step > max_timesteps or truncated:
-            break
+        if terminal or truncated:
+            return stats
 
         step += 1
 
@@ -106,6 +103,43 @@ def run_episode(
 
     return stats
 
+def fillBuffer(env,
+    agent,
+    deterministic = "false",
+    ):
+    """
+    This methods runs one episode for a gym environment.
+    deterministic == True => agent executes only greedy actions according the Q function approximator (no random actions).
+    do_training == True => train agent
+    """
+    
+    step = 0
+    state = env.reset()
+    state = state[0]
+
+    done = False
+    while done:
+
+
+        action_id = agent.act(state=state, deterministic=deterministic)
+        next_state, reward, terminal, truncated,info = env.step(action_id)
+
+        agent.add_transition(state, action_id, next_state, reward, terminal)
+        state = next_state
+
+        if rendering:
+            env.render()
+
+        if terminal or truncated:
+            state = env.reset()
+            state = state[0]
+            
+        done = agent.replay_bufferFilled()
+
+
+
+    print("Filled")
+    
 
 
 def train_online(
@@ -113,34 +147,32 @@ def train_online(
     agent,
     num_episodes,
     history_length=0,
-    model_dir="./models_carracing",
+    model_dir="./models",
     tensorboard_dir="./tensorboard",
 ):
 
     if not os.path.exists(model_dir):
         os.mkdir(model_dir)
 
+    fillBuffer(env,agent)
     print("... train agent")
     tensorboard = Evaluation(
         os.path.join(tensorboard_dir, "train"),name = "lunar_expert",
         stats=["episode_reward", "main", "left", "right","Eval"],
     )
 
-    max_timesteps = 2000#update
-    k = 0
     for i in range(num_episodes):
-        print("epsiode %d" % i)
 
    #     Hint: you can keep the episodes short in the beginning by changing max_timesteps (otherwise the car will spend most of the time out of the track)
 
         stats = run_episode(
             env,
             agent,
-            max_timesteps=max_timesteps,
             deterministic=False,
             do_training=True,
-            history_length=history_length
         )
+        
+        agent.updateEpsilon()
 
         tensorboard.write_episode_data(
             i,
@@ -156,14 +188,14 @@ def train_online(
         if i % eval_cycle == 0:
             total = 0
             for j in range(num_eval_episodes):
-                stats = run_episode(env, agent, deterministic=True, do_training=False,history_length=history_length)
+                stats = run_episode(env, agent, deterministic=True, do_training=False)
                 total += stats.episode_reward
             tensorboard.write_episode_data(i,{"Eval":total/num_eval_episodes})
+            print(f"Eval reward: {total/num_eval_episodes}")
 
         # store model.
-        if i % (eval_cycle*4) == 0 or (i >= num_episodes - 1):
+        if i % (500) == 0 or (i >= num_episodes - 1):
             agent.save(os.path.join(model_dir,f"dqn_agent_{i}.pt"))##update name
-            k += 1
     tensorboard.close_session()
 
 
@@ -174,15 +206,21 @@ if __name__ == "__main__":
     eval_cycle = 50
 
     env = gym.make("LunarLander-v3",continuous=False,gravity=-9.8,
-                   enable_wind=True,wind_power=15.0,turbulence_power=1.5)
+                   enable_wind=False,wind_power=15.0,turbulence_power=1.5)
     
+    device = torch.device("cuda" if torch.cuda.is_available() else"cpu")
     
+    print(f"using device: {device}")
+    print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
+
+    modelFile = "./models/dqn_agent_exp1.pt"
     # TODO: Define Q network, target network and DQN agent
-    Q = MLP(state_dim=8,action_dim=4)
-    Q_target = MLP(state_dim=8,action_dim=4)
+    Q = MLP(state_dim=8,action_dim=4,device=device)
+    Q_target = MLP(state_dim=8,action_dim=4,device=device)
     
-    agent = DQNAgent(Q,Q_target,4)
+    agent = DQNAgent(Q,Q_target,4,device=device)
+    agent.load(modelFile)
 
     train_online(
-        env, agent, num_episodes=10000, history_length=3, model_dir="./models"
+        env, agent, num_episodes=10000, model_dir="./models"
     )

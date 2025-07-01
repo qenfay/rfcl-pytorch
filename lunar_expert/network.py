@@ -11,9 +11,9 @@ import os
 import gzip
 import pickle
 
-def soft_update(target, source, tau):
+def Q_update(target, source):
     for target_param, param in zip(target.parameters(), source.parameters()):
-        target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
+        target_param.data.copy_(param.data)
         
         
 class ReplayBuffer:
@@ -32,6 +32,8 @@ class ReplayBuffer:
             states=deque(maxlen=history_length), actions=deque(maxlen=history_length), next_states=deque(maxlen=history_length), 
             rewards=deque(maxlen=history_length), dones=deque(maxlen=history_length)
         )
+        
+        self.count = 0
 
     def add_transition(self, state, action, next_state, reward, done):
         """
@@ -42,6 +44,9 @@ class ReplayBuffer:
         self._data.next_states.append(next_state)
         self._data.rewards.append(reward)
         self._data.dones.append(done)
+        
+        if self.count < self.history_length:
+            self.count += 1
 
     def next_batch(self, batch_size):
         """
@@ -64,21 +69,17 @@ class ReplayBuffer:
 
 
 class MLP(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=400,device='cpu'):
+    def __init__(self, state_dim, action_dim, hidden_dim=256,device='cpu'):
         super(MLP, self).__init__()
         self.device=device
         self.fc1 = nn.Linear(state_dim, hidden_dim,device=device)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim,device=device)
-        self.fc3 = nn.Linear(hidden_dim, hidden_dim,device=device)
-        self.fc4 = nn.Linear(hidden_dim, hidden_dim,device=device)
         self.fc5 = nn.Linear(hidden_dim, action_dim,device=device)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = F.relu(self.fc4(x))
-        x = F.relu(self.fc5(x))
+        x = self.fc5(x)
         return x
 
 
@@ -90,14 +91,14 @@ class DQNAgent:
         Q,
         Q_target,
         num_actions,
-        gamma=0.95,
-        batch_size=64,
+        gamma=0.99,
+        batch_size=256,
         epsilon_min=0.05,
-        epsilon=0.8,
+        epsilon=0.4,
         decay = 0.9995,
-        tau=0.01,
-        lr=5e-4,
-        history_length=10_000_000,
+        lr=1e-4,
+        history_length=100_000,
+        device='cpu'
     ):
         """
         Q-Learning agent for off-policy TD control using Function Approximation.
@@ -114,7 +115,7 @@ class DQNAgent:
            lr: learning rate of the optimizer
         """
         
-        self.device = torch.device("cuda" if torch.cuda.is_available() else"cpu")
+        self.device = device
         
         
         # setup networks
@@ -129,16 +130,25 @@ class DQNAgent:
         # parameters
         self.batch_size = batch_size
         self.gamma = gamma
-        self.tau = tau
-        self.epsilon_max = epsilon - 0.2
         self.epsilon = epsilon
         self.epsilon_min = epsilon_min
         self.decay = decay
 
-        self.loss_function = torch.nn.MSELoss()
+        self.loss_function = torch.nn.HuberLoss()
         self.optimizer = optim.Adam(self.Q.parameters(), lr=lr)
         
         self.num_actions = num_actions
+        self.step = 0
+        self.Q_updateStep = 500
+        
+    def add_transition(self, state, action, next_state, reward, terminal):
+        """
+        This method stores a transition to the replay buffer
+        """
+        self.replay_buffer.add_transition(state,action,next_state=next_state,reward=reward,done=terminal)
+        
+    def replay_bufferFilled(self):
+        return self.replay_buffer.count == (self.replay_buffer.history_length - 1)
 
     def train(self, state, action, next_state, reward, terminal):
         """
@@ -153,7 +163,14 @@ class DQNAgent:
         #       2.2 update the Q network
         #       2.3 call soft update for target network
         #           soft_update(self.Q_target, self.Q, self.tau)
+
+        
         self.replay_buffer.add_transition(state,action,next_state=next_state,reward=reward,done=terminal)
+        
+        if self.step == 0:
+            print("training started!")
+            
+        self.optimizer.zero_grad()
         
         state_batch, action_batch, next_state_batch, reward_batch, terminal_batch = self.replay_buffer.next_batch(self.batch_size)
         state_batch = torch.tensor(state_batch, dtype=torch.float32,device=self.device)
@@ -162,40 +179,28 @@ class DQNAgent:
         reward_batch = torch.tensor(reward_batch, dtype=torch.float32,device=self.device).unsqueeze(1)  # shape [B, 1]
         terminal_batch = torch.tensor(terminal_batch, dtype=torch.float32,device=self.device).unsqueeze(1)  # shape [B, 1]
         
-        print(state_batch.shape)
-        print(next_state_batch.shape)
         q_val = self.Q(state_batch)
         q_val=q_val.gather(1,action_batch)
 
         with torch.no_grad():
+
             next_state_vals = self.Q_target(next_state_batch).max(dim=1, keepdim=True)[0]
             
         td_target = reward_batch + self.gamma * (1 - terminal_batch) * next_state_vals
         loss = self.loss_function(q_val,td_target)
-        self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
         
-        soft_update(self.Q_target,self.Q,self.tau)
+        if self.step % self.Q_updateStep == 0: 
+            Q_update(self.Q_target,self.Q)
 
-
-        # if self.step < 30: # Super fast decay in the beginning
-        #     self.epsilon = max(self.epsilon * self.decay * self.epsilon,self.epsilon_min)
-        # elif self.step < 150:# slower decay after
-        #     self.epsilon = max(self.epsilon * self.decay,self.epsilon_min)
-            
-        # elif self.step % 150 == 0: #slight resets until end
-        #     self.epsilon = self.epsilon_max
-        #     self.epsilon_max = max(self.epsilon_min,self.epsilon_max-0.1)
-        # else:
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.decay
-        
-        #if self.step > 150: # lower lr after 
-            
+        self.step += 1
         torch.cuda.empty_cache()
         
+    def updateEpsilon(self):
         
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.decay
         
         
 
