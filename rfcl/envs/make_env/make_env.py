@@ -15,6 +15,7 @@ import rfcl.envs.make_env._gymnasium_robotics as _gymnasium_robotics
 import rfcl.envs.make_env._mani_skill2 as _mani_skill2
 import rfcl.envs.make_env._meta_world as _meta_world
 import rfcl.envs.make_env._mani_skill3 as _mani_skill3
+import rfcl.envs.make_env._lunar_lander as _lunar_lander
 from rfcl.envs.wrappers.common import (
     ContinuousTaskWrapper,
     EpisodeStatsWrapper,
@@ -149,6 +150,11 @@ def make_env(
                     return wrap_env(env, idx=idx, record_video_path=record_video_path, wrappers=wrappers, record_episode_kwargs=record_episode_kwargs)
 
                 return _init
+            
+        ###Have to add lunarlander env
+        
+        elif _lunar_lander.is_lunar_lander_env(env_id):
+            env_factory = _lunar_lander.env_factory
 
         else:
             raise NotImplementedError()
@@ -176,10 +182,10 @@ def make_env(
                 ]
             )
         else:
-            env = gymnasium.make(env_id, num_envs=num_envs, **env_kwargs)
+            env = gymnasium.make(env_id)#, num_envs=num_envs, **env_kwargs)
 
-        obs_space = env.single_observation_space
-        act_space = env.single_action_space
+        obs_space = env.observation_space #changed from single_
+        act_space = env.action_space#changed from single_
         env.reset(seed=seed)
         sample_obs = obs_space.sample()
         sample_acts = act_space.sample()
@@ -189,7 +195,8 @@ def make_env(
         act_space=act_space,
         sample_obs=sample_obs,
         sample_acts=sample_acts,
-        env_suite=get_env_suite(env_id),
+        env_suite=
+        (env_id),
     )
 
 
@@ -232,6 +239,11 @@ def get_initial_state_wrapper(env_id):
         from rfcl.envs.wrappers._meta_world import MetaWorldInitialStateWrapper
 
         return MetaWorldInitialStateWrapper
+    
+    elif _lunar_lander.is_lunar_lander_env(env_id):
+        from rfcl.envs.wrappers._lunar_lander import LunarLanderInitialStateWrapper
+        
+        return LunarLanderInitialStateWrapper
     else:
         raise NotImplementedError(
             f"Need to add the initial state wrapper for {env_id}. Add it to rfcl/envs/wrappers/_<env_suite_name>.py and import it and return it here"
