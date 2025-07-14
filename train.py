@@ -88,7 +88,7 @@ class SACExperiment:
     logger: Optional[LoggerConfig]
     verbose: int
     algo: str = "sac"
-    0stage_1_model_path: str = None  # if not None, will load pretrained stage 1 model and skip to stage 2 of training
+    stage_1_model_path: str = None  # if not None, will load pretrained stage 1 model and skip to stage 2 of training
     save_eval_video: bool = True  # whether to save eval videos
     stage_1_only: bool = False  # stop training after reverse curriculum completes
     stage_2_only: bool = False # skip stage 1 training
@@ -101,9 +101,7 @@ from dacite import from_dict
 def main(cfg: SACExperiment):
     np.random.seed(cfg.seed)
 
-    ### Setup the experiment parameters ###
-
-    # Setup training and evaluation environment configs
+    ### S-0
     env_cfg = cfg.env
     if "env_kwargs" not in env_cfg:
         env_cfg["env_kwargs"] = dict()

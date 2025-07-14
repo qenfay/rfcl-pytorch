@@ -85,6 +85,7 @@ def run_episode(
         next_state, reward, terminal, truncated,info = env.step(action_id)
 
         if do_training  == True:
+
             agent.train(state, action_id, next_state, reward, terminal)
 
         stats.step(reward, action_id)
@@ -92,6 +93,7 @@ def run_episode(
         state = next_state
 
         if rendering:
+            print("render")
             env.render()
 
         if terminal or truncated:

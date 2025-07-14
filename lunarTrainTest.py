@@ -143,9 +143,68 @@ def main(cfg:SACExperiment):
 ]
     ##env is created, some changes into their codebase, should refactor later
     env, env_meta = make_env_from_cfg(cfg.env, seed=cfg.seed, wrappers=wrappers)
+    eval_env = None
+    use_orig_env_for_eval = cfg.train.use_orig_env_for_eval    
+    link_envs = []
+    if not use_orig_env_for_eval:
+        eval_env = ReverseCurriculumWrapper(
+            eval_env,
+            eval_mode=True,
+            eval_start_of_demos=cfg.train.eval_start_of_demos,
+            states_dataset=states_dataset,
+            reverse_step_size=cfg.train.reverse_step_size,
+            curriculum_method=cfg.train.curriculum_method,
+            per_demo_buffer_size=cfg.train.per_demo_buffer_size,
+            start_step_sampler=cfg.train.start_step_sampler,
+        )
+        link_envs = [eval_env]
+    env = ReverseCurriculumWrapper(
+        env,
+        states_dataset=states_dataset,
+        reverse_step_size=cfg.train.reverse_step_size,
+        curriculum_method=cfg.train.curriculum_method,
+        per_demo_buffer_size=cfg.train.per_demo_buffer_size,
+        start_step_sampler=cfg.train.start_step_sampler,
+        link_envs=link_envs,
+    )
+
+    sample_obs, sample_acts = env_meta.sample_obs, env_meta.sample_acts
+
+    sample_acts = sample_acts.reshape(-1,1)
+    # create actor and critics models
+    act_dims = get_action_dim(env_meta.act_space)
     
+    def create_ac_model():
+        actor = DiagGaussianActor(
+            feature_extractor=build_network_from_cfg(cfg.network.actor),
+            act_dims=act_dims,
+            state_dependent_std=True,
+        )
+        ac = ActorCritic.create(
+            jax.random.PRNGKey(cfg.seed),
+            actor=actor,
+            critic_feature_extractor=build_network_from_cfg(cfg.network.critic),
+            sample_obs=sample_obs,
+            sample_acts=sample_acts,
+            initial_temperature=cfg.sac.initial_temperature,
+            actor_optim=optax.adam(learning_rate=cfg.train.actor_lr),
+            critic_optim=optax.adam(learning_rate=cfg.train.critic_lr),
+        )
+        return ac
     
+    ac = create_ac_model()
+    cfg.logger.cfg = asdict(cfg)
+    logger_cfg = cfg.logger
+    algo = SAC(
+        env=env,
+        eval_env=eval_env,
+        env_type=cfg.env.env_type,
+        ac=ac,
+        logger_cfg=logger_cfg,
+        cfg=cfg.sac,
+    )
     
+    ###Works till here ig!
 
 if __name__ == "__main__":
    
@@ -159,10 +218,10 @@ if __name__ == "__main__":
         log_freq=1000,save_freq=10_000,learnable_temp=True,initial_temperature=1.0
     )
     
-    env_cfg = EnvConfig(env_id="LunarLander-v2",env_type='cpu',max_episode_steps=1000,
+    env_cfg = EnvConfig(env_id="LunarLander-v2",env_type='gym:cpu',max_episode_steps=1000,
                         num_envs= 8, env_kwargs={}, action_scale=None)#GO over what args do
     
-    eval_cfg = EnvConfig(env_id="LunarLander-v2",env_type='cpu',max_episode_steps=1000,
+    eval_cfg = EnvConfig(env_id="LunarLander-v2",env_type='gym:cpu',max_episode_steps=1000,
                         num_envs= 2, env_kwargs={}, action_scale=None)
     
     train_cfg = TrainConfig(steps = 1_000_000,actor_lr= 3e-4,critic_lr=3e-4,
@@ -176,9 +235,9 @@ if __name__ == "__main__":
                             score_temperature=0.1,num_seeds=1000)
     
     network_cfg = SACNetworkConfig(
-        actor=NetworkConfig(type="mlp",arch_cfg={"features":[256,256,256],"output_activation":"relu"}),
+        actor=NetworkConfig(type="mlp",arch_cfg={"features":[256,256,256],"output_activation":"relu","use_layer_norm":False}),
         critic=NetworkConfig(type="mlp",arch_cfg={"features":[256,256,256],"output_activation":"relu",
-                                                  "use_layer_norm":"True"})
+                                                  "use_layer_norm":True})
         )###Make sure arch_cfg is correct type
     
     logger_cfg = LoggerConfig(workspace="exps")#GO read what this does

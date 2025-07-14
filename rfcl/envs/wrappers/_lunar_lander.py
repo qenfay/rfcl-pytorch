@@ -31,7 +31,8 @@ class LunarLanderInitialStateWrapper(InitialStateWrapper):
         #makes sure legs also reset to correct position
         #Otherwise sometimes start spinning around
         self.unwrapped.legs[0].position=(x, y)
-        self.unwrapped.legs[1].position=(x -  2/3, y)
+        self.unwrapped.legs[1].position=(x - 2/3, y)
 
-        def get_env_obs(self):
-            return self.env.unwrapped.get_obs()
+    def get_env_obs(self):# reimplement, shouldn't just step!
+        obs = self.env.unwrapped.step(0)
+        return obs[0]
