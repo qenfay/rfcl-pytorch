@@ -204,6 +204,7 @@ def main(cfg: SACExperiment):
     # create actor and critics models
     act_dims = get_action_dim(env_meta.act_space)
 
+
     def create_ac_model():
         actor = DiagGaussianActor(
             feature_extractor=build_network_from_cfg(cfg.network.actor),
@@ -293,7 +294,7 @@ def main(cfg: SACExperiment):
     print("Stage 2 Training starting")
     # Optionally load actor/critic networks from stage 1 of training
     ac = create_ac_model()
-    if cfg.train.load_actor:0
+    if cfg.train.load_actor:
         ac = ac.load(algo.state.ac.state_dict(), load_critic=cfg.train.load_critic)
         algo.state = algo.state.replace(ac=ac)
 

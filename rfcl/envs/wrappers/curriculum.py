@@ -65,6 +65,7 @@ class InitialStateWrapper(gymnasium.Wrapper):
         self.demo_states: np.ndarray = None
         self.demo_metadata = defaultdict(InitialStateMetadata)
         self.demo_ids = list(states_dataset.keys())
+        print(f"demo_ids: {self.demo_ids}")
         self.demo_id_density = np.zeros(len(self.demo_ids))
         for demo_id in states_dataset:
             self.demo_metadata[demo_id] = InitialStateMetadata(
@@ -72,6 +73,8 @@ class InitialStateWrapper(gymnasium.Wrapper):
                 start_steps=np.array([0]),
                 start_steps_density=np.array([1]),
             )
+            print(f"meta_data: {self.demo_metadata[demo_id]}")
+        
         for i in range(len(self.demo_ids)):
             self.demo_id_density[i] = 1 / len(self.demo_ids)
 
@@ -108,6 +111,10 @@ class InitialStateWrapper(gymnasium.Wrapper):
 
     def set_demo_start_steps(self, t_is, id_to_start_steps, id_to_start_steps_density):
         """Set the distribution of start steps for each demo"""
+        # print("Start step distributions!")
+        # print(f"id to start steps: {id_to_start_steps}")
+        # print(f"id to start step dens: {id_to_start_steps_density}")
+        # print(f"t_is : {t_is}")
         for demo_id in id_to_start_steps:
             self.demo_metadata[demo_id].start_steps = id_to_start_steps[demo_id]
             self.demo_metadata[demo_id].start_steps_density = id_to_start_steps_density[demo_id]
@@ -131,6 +138,7 @@ class InitialStateWrapper(gymnasium.Wrapper):
         # sample a start step
         metadata = self.demo_metadata[demo_id]
         start_step = self._state_rng.choice(metadata.start_steps, p=metadata.start_steps_density)
+        #print(f"reset start state: {self.demo_states[start_step]}")
         self.set_env_state(self.demo_states[start_step])
 
         # retrieve the actual new observation which we reset to
@@ -141,6 +149,7 @@ class InitialStateWrapper(gymnasium.Wrapper):
 
         self.current_episode_metadata = EpisodeMetadata(start_step=start_step, demo_id=demo_id)
         self.step_count = 0  # TODO remove in favor of info["eps_len"]
+        #print(f"current ep start step: {self.current_episode_metadata.start_step}")
         return obs, info
 
     def step(self, action):
@@ -157,10 +166,11 @@ class InitialStateWrapper(gymnasium.Wrapper):
         info["sampled_start_step_frac"] = info["stats"]["sampled_start_step_frac"]
 
         # handle per-demo timelimit here
-        if self.demo_horizon_to_max_steps_ratio > 0:
-            dynamic_timelimit = 16 + (metadata.total_steps - self.current_episode_metadata.start_step) // self.demo_horizon_to_max_steps_ratio
-            if self.step_count >= dynamic_timelimit:
-                truncated = True
+        # if self.demo_horizon_to_max_steps_ratio > 0:
+        #     dynamic_timelimit = 16 + (metadata.total_steps - self.current_episode_metadata.start_step) // self.demo_horizon_to_max_steps_ratio #increased from 16 to 70 for sleep timer in lunar lander! move this to wrapper!
+        #     #print(f"dynamic_timelimit: {dynamic_timelimit}")
+        #     if self.step_count >= dynamic_timelimit:
+        #         truncated = True
 
         return observation, reward, terminated, truncated, info
 
@@ -248,6 +258,8 @@ class ReverseCurriculumWrapper(VectorEnvWrapper):
         assert self.start_step_sampler in ["fixed_point", "uniform", "geometric", "uniform_step", "uniform_spike"]
 
         self.sync_envs()
+        
+        self.counter=0
 
     def sync_envs(self):
         """
@@ -328,13 +340,17 @@ class ReverseCurriculumWrapper(VectorEnvWrapper):
                     continue
                 demo_id = final_info["demo_id"]
                 success = final_info["success"]
+                #print(f"final info: {final_info}")
                 metadata = self.demo_metadata[demo_id]
 
                 # record successes only when steps back is equal to the current frontier / start step t_i assigned to demo tau_i
-                if final_info["steps_back"] == metadata.total_steps - metadata.start_step:
-                    metadata.success_rate_buffer.append(int(success))
-                    metadata.episode_steps_back.append(final_info["steps_back"])
-                    self.global_success_rate_history.append(int(success))
+                #if final_info["steps_back"] == metadata.total_steps - metadata.start_step:# this will not work for lunar lander due to settling time, commenting out for now
+                #look deeper into why it's only added when step count is equal? Probably for optimal trajectories?
+                
+                #print("success in step wait count")
+                metadata.success_rate_buffer.append(int(success))
+                metadata.episode_steps_back.append(final_info["steps_back"])
+                self.global_success_rate_history.append(int(success))
             if not self.eval_mode:
                 self.step_curriculum()
         return observation, reward, terminated, truncated, info

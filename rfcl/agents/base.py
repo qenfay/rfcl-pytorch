@@ -172,6 +172,12 @@ class BasePolicy:
         ret = dict(eval_ep_rets=eval_ep_rets, eval_ep_avg_reward=eval_ep_rets / eval_ep_lens, eval_ep_lens=eval_ep_lens, stats=stats)
         if "success_at_end" in stats:
             ret["success_at_end"] = stats.pop("success_at_end")
+        else:
+            ret["success_at_end"] = False
+            print("No success at end!")
         if "success_once" in stats:
             ret["success_once"] = stats.pop("success_once")
+        else:
+            print("No success once!")
+            ret["success_once"] = False
         return ret

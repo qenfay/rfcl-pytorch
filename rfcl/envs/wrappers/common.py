@@ -23,7 +23,7 @@ class ContinuousTaskWrapper(gym.Wrapper):
 
     def step(self, action):
         observation, reward, terminated, truncated, info = super().step(action)
-        terminated = False
+        #terminated = False
         return observation, reward, terminated, truncated, info
 
 
@@ -43,6 +43,7 @@ class EpisodeStatsWrapper(gym.Wrapper):
     def step(self, action):
         observation, reward, terminated, truncated, info = super().step(action)
         info["seed"] = self.eps_seed
+        
         if "episode" in info:
             info["stats"] = info.pop("episode")
             info["eps_ret"] = info["stats"]["return"]

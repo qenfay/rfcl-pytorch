@@ -83,7 +83,7 @@ def make_env_from_cfg(cfg: EnvConfig, seed: int = None, video_path: str = None, 
         record_video_path=video_path,
         env_kwargs=cfg.env_kwargs,
         action_scale=cfg.action_scale,
-        in_wrappers=wrappers,
+        wrappers=wrappers,
         record_episode_kwargs=record_episode_kwargs,
     )
 
@@ -97,7 +97,7 @@ def make_env(
     record_video_path: str = None,
     env_kwargs=dict(),
     action_scale: np.ndarray = None,
-    in_wrappers=[],
+    wrappers=[],
     record_episode_kwargs=dict(),
 ):
     """
@@ -115,7 +115,7 @@ def make_env(
             env_action_scale = action_scale
         rescale_action_wrapper = lambda x: gymnasium.wrappers.RescaleAction(x, -env_action_scale, env_action_scale)
         clip_wrapper = lambda x: gymnasium.wrappers.ClipAction(x)
-        wrappers = [ContinuousTaskWrapper, SparseRewardWrapper, EpisodeStatsWrapper, rescale_action_wrapper, clip_wrapper, *in_wrappers]
+        wrappers = [ContinuousTaskWrapper, EpisodeStatsWrapper, rescale_action_wrapper, clip_wrapper, *wrappers] #SparseRewardWrapper removed for lunar lander!
         if _mani_skill3.is_mani_skill3_env(env_id):
             env_factory = _mani_skill3.env_factory
             context = "forkserver"  # currently ms3 does not work with fork
@@ -155,8 +155,6 @@ def make_env(
         
         elif _lunar_lander.is_lunar_lander_env(env_id):
             env_factory = _lunar_lander.env_factory
-            wrappers = [EpisodeStatsWrapper, *in_wrappers]
-            context = None
 
         else:
             raise NotImplementedError()
@@ -187,8 +185,8 @@ def make_env(
             env = gymnasium.make(env_id)#, num_envs=num_envs, **env_kwargs)
 
         
-        obs_space = env.observation_space #changed from single_
-        act_space = env.action_space#changed from single_
+        obs_space = env.single_observation_space #changed from single_
+        act_space = env.single_action_space#changed from single_
         
         env.reset(seed=seed)
         sample_obs = obs_space.sample()

@@ -95,13 +95,16 @@ class SACExperiment:
 def load_minari_dataset(dataset_name):
     
     dataset = minari.load_dataset(dataset_name)
-    filter_dataset = dataset.filter_episodes(lambda episode: episode.rewards.sum() > 180)
+    filter_dataset = dataset.filter_episodes(lambda episode: episode.rewards.sum() > 200) # Add filter on final state as well?
 
     i = 0
     out = {}
     for episode in filter_dataset:
         out[i] = dict(state=episode.observations,seed=0,reset_kwargs={},demo_id=i)
+        print(episode.rewards.sum())
         i+=1
+    
+   
         
     return out
 
@@ -113,7 +116,7 @@ def main(cfg:SACExperiment):
     
     cfg.sac.num_envs = cfg.env.num_envs
     cfg.sac.num_eval_envs = cfg.eval_env.num_envs #Not sure why these 2 done
-    
+    eval_env_cfg = cfg.eval_env
     #First function to be called in their code
     #Hardcode for now
     #change to this get_states_dataset(cfg.train.dataset_path, num_demos=cfg.train.num_demos)
@@ -121,6 +124,18 @@ def main(cfg:SACExperiment):
 
     states_dataset = load_minari_dataset("lunarLander/reverseCurriculum-v0")
     
+    orig_exp_name = cfg.logger.exp_name
+    exp_path = osp.join(cfg.logger.workspace, orig_exp_name)
+    if osp.exists(exp_path):
+        i = 1
+        prev_exp_path = exp_path
+        while osp.exists(exp_path):
+            prev_exp_path = exp_path
+            cfg.logger.exp_name = f"{orig_exp_name}_{i}"
+            exp_path = osp.join(cfg.logger.workspace, cfg.logger.exp_name)
+            i += 1
+        warnings.warn(f"{prev_exp_path} already exists. Changing exp_name to {cfg.logger.exp_name}")
+    video_path = osp.join(cfg.logger.workspace, cfg.logger.exp_name, "stage_1_videos")
     #print(states_dataset)
     
     #Hardcoded for now, update later
@@ -128,7 +143,19 @@ def main(cfg:SACExperiment):
     
     #Skipping the optional "train_on_demo_actions",
     #Implement it later
-    
+    if cfg.train.train_on_demo_actions:
+        demo_replay_dataset = ReplayDataset(
+            cfg.train.dataset_path,
+            shuffle=cfg.train.shuffle_demos,
+            skip_failed=False,
+            num_demos=cfg.train.num_demos,
+            reward_mode=reward_mode,
+            eps_ids=states_dataset.keys(), # forces the demo replay dataset used as the offline buffer to use the same demos as the reverse curriculum
+            data_action_scale=cfg.train.data_action_scale,
+        )
+        if demo_replay_dataset.action_scale is not None:
+            env_cfg.action_scale = demo_replay_dataset.action_scale.tolist()
+            eval_env_cfg.action_scale = env_cfg.action_scale
     #Create Env Wrapper, Have to modify files for this :(
         
     InitialStateWrapper = get_initial_state_wrapper(cfg.env.env_id)
@@ -142,7 +169,7 @@ def main(cfg:SACExperiment):
     )
 ]
     ##env is created, some changes into their codebase, should refactor later
-    env, env_meta = make_env_from_cfg(cfg.env, seed=cfg.seed, wrappers=wrappers)
+    env, env_meta = make_env_from_cfg(cfg.env, seed=cfg.seed, wrappers=wrappers, video_path= video_path)
     eval_env = None
     use_orig_env_for_eval = cfg.train.use_orig_env_for_eval    
     link_envs = []
@@ -169,10 +196,10 @@ def main(cfg:SACExperiment):
     )
 
     sample_obs, sample_acts = env_meta.sample_obs, env_meta.sample_acts
-
-    sample_acts = sample_acts.reshape(-1,1)
     # create actor and critics models
     act_dims = get_action_dim(env_meta.act_space)
+    
+    print(f"act_dims: {act_dims}")
     
     def create_ac_model():
         actor = DiagGaussianActor(
@@ -204,6 +231,135 @@ def main(cfg:SACExperiment):
         cfg=cfg.sac,
     )
     
+    if cfg.train.train_on_demo_actions:
+        algo.offline_buffer = demo_replay_dataset  # create offline buffer to oversample from
+
+    if not cfg.stage_2_only:
+        def early_stop_fn(locals):
+            # callback function to log reverse curriculum metrics and stop training once reverse curriculum is done
+            nonlocal env, algo
+            logger = algo.logger
+            demo_metadata = env.demo_metadata
+            pts = []
+            solved_frac = 0
+            for k in demo_metadata:
+                pts.append(demo_metadata[k].start_step / (demo_metadata[k].total_steps - 1))
+                solved_frac += int(demo_metadata[k].solved)
+            solved_frac = solved_frac / len(demo_metadata)
+            mean_start_step = np.mean(pts)
+            logger.tb_writer.add_histogram("train_stats/start_step_frac_dist", pts, algo.state.total_env_steps)
+            logger.tb_writer.add_scalar("train_stats/start_step_frac_avg", mean_start_step, algo.state.total_env_steps)
+            if logger.wandb:
+                import wandb as wb
+
+                logger.wandb_run.log(data={"train_stats/start_step_frac_dist": wb.Histogram(pts)}, step=algo.state.total_env_steps)
+                logger.wandb_run.log(data={"train_stats/start_step_frac_avg": mean_start_step}, step=algo.state.total_env_steps)
+
+            if solved_frac > 0.9:
+                print("Reverse solved > 0.9 of demos. Stopping stage 1")
+                return True
+            return False
+
+        if cfg.stage_1_model_path is None:
+            rng_key, train_rng_key = jax.random.split(jax.random.PRNGKey(cfg.seed), 2)
+            algo.train(
+                rng_key=train_rng_key,
+                steps=cfg.train.steps,
+                callback_fn=early_stop_fn,
+                verbose=cfg.verbose,
+            )
+            algo.save(osp.join(algo.logger.model_path, "stage_1.jx"), with_buffer=True)
+            algo.logger.tb_writer.add_scalar("train_stats/stage_1_steps", algo.state.total_env_steps, algo.state.total_env_steps)
+            if algo.logger.wandb:
+                algo.logger.wandb_run.log(data={"train_stats/stage_1_steps": algo.state.total_env_steps}, step=algo.state.total_env_steps)
+        else:
+            print(f"Loading stage 1 model: {cfg.stage_1_model_path}")
+            algo.load_from_path(cfg.stage_1_model_path)
+
+    #cfg.stage_1_only = True###For testing reverse curriculum!
+    if cfg.stage_1_only:
+        exit()
+        
+    print("Stage 2 Training starting")
+    # Optionally load actor/critic networks from stage 1 of training
+    ac = create_ac_model()
+    if cfg.train.load_actor:
+        ac = ac.load(algo.state.ac.state_dict(), load_critic=cfg.train.load_critic)
+        algo.state = algo.state.replace(ac=ac)
+
+    if not cfg.stage_2_only:
+        # if not stage 2 only, there is a stage 1 replay buffer we can use
+        # Load previous model's replay buffer as a separate offline buffer to sample from or directly into the online buffer
+        if cfg.train.load_as_offline_buffer:
+            print(
+                f"Loading replay buffer as offline buffer which contains {algo.replay_buffer.size() * algo.replay_buffer.num_envs} interactions. Reset online buffer"
+            )
+            algo.offline_buffer = copy.deepcopy(algo.replay_buffer)
+            algo.replay_buffer.reset()
+        if cfg.train.load_as_online_buffer:
+            print(
+                f"Loading replay buffer into online buffer which contains {algo.replay_buffer.size() * algo.replay_buffer.num_envs} interactions. No offline buffer"
+            )
+            algo.offline_buffer = None
+
+    # Switch environments from the reverse curriculum environments to a normal environment
+    env.close()#, eval_env.close() Add guard for when eval_env not used!
+
+    video_path = osp.join(cfg.logger.workspace, cfg.logger.exp_name, "stage_2_videos")
+    wrappers = []
+    if cfg.train.data_action_scale is not None:#Minor issue with scaling since demo_replay_dataset not defined yet
+        rescale_action_wrapper = lambda x: gym.wrappers.RescaleAction(x, -demo_replay_dataset.action_scale, demo_replay_dataset.action_scale)
+        clip_wrapper = lambda x: gym.wrappers.ClipAction(x)
+        wrappers += [rescale_action_wrapper, clip_wrapper]
+
+    env, env_meta = make_env_from_cfg(env_cfg, seed=cfg.seed, wrappers=wrappers)
+    eval_env = None
+    if cfg.sac.num_eval_envs > 0:
+        eval_wrappers = []
+        if cfg.train.data_action_scale is not None:
+            eval_wrappers += [rescale_action_wrapper, clip_wrapper]
+        eval_env, _ = make_env_from_cfg(
+            eval_env_cfg,
+            seed=cfg.seed + 1_000_000,
+            video_path=video_path if cfg.save_eval_video else None,
+            wrappers=eval_wrappers,
+        )
+
+    print(f"Forward curriculum: {cfg.train.forward_curriculum}")
+    if cfg.train.forward_curriculum is not None and cfg.train.forward_curriculum != "None":
+        env = SeedBasedForwardCurriculumWrapper(
+            env,
+            score_transform=cfg.train.score_transform,
+            score_temperature=cfg.train.score_temperature,
+            staleness_transform=cfg.train.staleness_transform,
+            staleness_temperature=cfg.train.staleness_temperature,
+            staleness_coef=cfg.train.staleness_coef,
+            score_fn=cfg.train.forward_curriculum,
+            rho=0,
+            nu=0.95,
+            num_seeds=cfg.train.num_seeds,
+        )
+        env.reset(seed=cfg.seed)
+    algo.setup_envs(env, eval_env)
+    algo.state = algo.state.replace(initialized=False)
+
+    (
+        rng_key,
+        train_rng_key,
+    ) = jax.random.split(jax.random.PRNGKey(cfg.seed), 2)
+
+    # we seed with policy in stage 2 for algo.cfg.num_seed_steps
+    algo.cfg.seed_with_policy = True
+    algo.cfg.num_seed_steps = algo.state.total_env_steps + algo.cfg.num_seed_steps
+    print(f"Seeding until {algo.cfg.num_seed_steps}")
+    print(f"steps: {cfg.train.steps - algo.state.total_env_steps}")
+    algo.train(
+        rng_key=train_rng_key,
+        steps=cfg.train.steps - algo.state.total_env_steps,
+        verbose=cfg.verbose,
+    )
+    algo.save(osp.join(algo.logger.model_path, "latest.jx"), with_buffer=False)
+    
     ###Works till here ig!
 
 if __name__ == "__main__":
@@ -213,9 +369,9 @@ if __name__ == "__main__":
 
     sac_cfg = SACConfig(
         num_seed_steps=5000,seed_with_policy=False,replay_buffer_capacity=200_000,batch_size=256,
-        steps_per_env=1,grad_updates_per_step=80,actor_update_freq=20,num_qs=10,num_min_qs=2,
-        discount=0.99, tau=0.005,backup_entropy=False,eval_freq=5_000,eval_steps=500,
-        log_freq=1000,save_freq=10_000,learnable_temp=True,initial_temperature=1.0
+        steps_per_env=6,grad_updates_per_step=80,actor_update_freq=20,num_qs=10,num_min_qs=2,
+        discount=0.99, tau=0.005,backup_entropy=False,eval_freq=500,eval_steps=500,
+        log_freq=1000_000,save_freq=10_000,learnable_temp=True,initial_temperature=1.0
     )
     
     env_cfg = EnvConfig(env_id="LunarLander-v2",env_type='gym:cpu',max_episode_steps=1000,
@@ -224,14 +380,14 @@ if __name__ == "__main__":
     eval_cfg = EnvConfig(env_id="LunarLander-v2",env_type='gym:cpu',max_episode_steps=1000,
                         num_envs= 2, env_kwargs={}, action_scale=None)
     
-    train_cfg = TrainConfig(steps = 1_000_000,actor_lr= 3e-4,critic_lr=3e-4,
+    train_cfg = TrainConfig(steps = 10_000_000,actor_lr= 3e-4,critic_lr=3e-4,
                             dataset_path="",shuffle_demos=True,num_demos=5,
-                            data_action_scale=0,reverse_step_size=4,
+                            data_action_scale=None,reverse_step_size=5,
                             start_step_sampler="geometric",curriculum_method="per_demo",
-                            per_demo_buffer_size=3,demo_horizon_to_max_steps_ratio=3,
-                            train_on_demo_actions=True,load_actor=True,load_critic=True,load_as_offline_buffer=True,
+                            per_demo_buffer_size=3,demo_horizon_to_max_steps_ratio=1,
+                            train_on_demo_actions=False,load_actor=True,load_critic=True,load_as_offline_buffer=True,
                             load_as_online_buffer=False,forward_curriculum="success_once_score",staleness_coef=0.1,
-                            staleness_temperature=0.1,staleness_transform="rankmin",score_transform=0.1,
+                            staleness_temperature=0.1,staleness_transform="rankmin",score_transform="identity",
                             score_temperature=0.1,num_seeds=1000)
     
     network_cfg = SACNetworkConfig(
@@ -240,7 +396,7 @@ if __name__ == "__main__":
                                                   "use_layer_norm":True})
         )###Make sure arch_cfg is correct type
     
-    logger_cfg = LoggerConfig(workspace="exps")#GO read what this does
+    logger_cfg = LoggerConfig(workspace="exps_lunar",tensorboard=True,exp_name="LunarTest")#GO read what this does
     
     
     cfg = SACExperiment(seed=0,sac = sac_cfg,env=env_cfg,eval_env=eval_cfg,

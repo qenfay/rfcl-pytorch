@@ -20,6 +20,8 @@ class LunarLanderInitialStateWrapper(InitialStateWrapper):
 
         c1 = state[6] == 1.0
         c2 = state[7] == 1.0
+        
+        #print(f"x : {x}, y : {y}")
 
         self.unwrapped.lander.position = b2Vec2(x,y)
         self.unwrapped.lander.angle = float(state[4])
@@ -32,7 +34,10 @@ class LunarLanderInitialStateWrapper(InitialStateWrapper):
         #Otherwise sometimes start spinning around
         self.unwrapped.legs[0].position=(x, y)
         self.unwrapped.legs[1].position=(x - 2/3, y)
+        
+        self.unwrapped.lander.awake = False
 
     def get_env_obs(self):# reimplement, shouldn't just step!
-        obs = self.env.unwrapped.step(0)
+        obs = self.env.unwrapped.step((0,0))
         return obs[0]
+    
